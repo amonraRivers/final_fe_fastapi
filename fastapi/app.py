@@ -3,13 +3,14 @@ import pickle
 
 import mysql.connector
 import numpy as np
-from fastapi import FastAPI
 from pydantic import BaseModel
+
+from fastapi import FastAPI
 
 app = FastAPI()
 
 # Cargar el modelo desde el archivo
-with open("modelo_gradient_descent.pkl", "rb") as file:
+with open("model.pkl", "rb") as file:
     theta = pickle.load(file)
 
 
@@ -19,16 +20,39 @@ def get_connection():
     user = "admin"
     password = "ramonawstest1"
     database = "finalRamon"
-    return mysql.connector.connect(
+    conn = mysql.connector.connect(
         host=host, user=user, password=password, database=database
     )
+    cursor = conn.cursor()
+    cursor.execute(
+        """CREATE TABLE IF NOT EXISTS predictions (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        CRIM FLOAT,
+        ZN FLOAT,
+        INDUS FLOAT,
+        CHAS INT,
+        NOX FLOAT,
+        RM FLOAT,
+        AGE FLOAT,
+        DIS FLOAT,
+        RAD FLOAT,
+        TAX FLOAT,
+        PTRATIO FLOAT,
+        B FLOAT,
+        LSTAT FLOAT,
+        prediction FLOAT,
+        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );"""
+    )
+    conn.commit()
+    return conn
 
 
 def get_stats():
     connection = get_connection()
     cursor = connection.cursor()
     cursor.execute(
-        "SELECT count(*), sum(prediction) ,max(prediction),min(prediction) FROM logs"
+        "SELECT count(*), sum(prediction) ,max(prediction),min(prediction) FROM predictions"
     )
     logs = cursor.fetchall()
     connection.close()
@@ -38,17 +62,47 @@ def get_stats():
 def insert_log(request, prediction):
     connection = get_connection()
     cursor = connection.cursor()
-    cursor.execute(
-        "INSERT INTO logs (request, prediction) VALUES (%s, %s)", (request, prediction)
+
+    insert_query = """INSERT INTO predictions (CRIM, ZN, INDUS, CHAS, NOX, RM, AGE, DIS, RAD, TAX, PTRATIO, B, LSTAT, prediction)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,%s)"""
+
+    values = (
+        request.crim,
+        request.zn,
+        request.indus,
+        request.chas,
+        request.nox,
+        request.rm,
+        request.age,
+        request.dis,
+        request.rad,
+        request.tax,
+        request.ptratio,
+        request.b,
+        request.lstat,
+        prediction,
     )
+
+    cursor.execute(insert_query, values)
     connection.commit()
     connection.close()
 
 
 # Definir un modelo de entrada para la solicitud POST
 class InputData(BaseModel):
-    sexo: str  # "Masculino" o "Femenino"
-    altura: float
+    crim: float
+    zn: float
+    indus: float
+    chas: int
+    nox: float
+    rm: float
+    age: float
+    dis: float
+    rad: int
+    tax: int
+    ptratio: float
+    b: float
+    lstat: float
 
 
 @app.post("/predict")
@@ -56,23 +110,42 @@ def predict(data: InputData):
     """
     Predice el peso basado en el sexo y la altura.
 
-    - `sexo`: "Masculino" o "Femenino"
-    - `altura`: Altura de la persona en unidades adecuadas.
     """
-    # Convertir sexo a una variable binaria
-    x_sexo = 1 if data.sexo.lower() == "masculino" else 0
+    # extraer los valores de la solicitud
 
     # Crear el vector de entrada para la predicción
-    x_input = np.array([1, x_sexo, data.altura])  # [1, sexo_binario, altura]
+    x_input = np.array(
+        [
+            [
+                data.crim,
+                data.zn,
+                data.indus,
+                data.chas,
+                data.nox,
+                data.rm,
+                data.age,
+                data.dis,
+                data.rad,
+                data.tax,
+                data.ptratio,
+                data.b,
+                data.lstat,
+            ]
+        ]
+    )  # [1, ...]
 
     # Calcular el peso predicho
-    peso_predicho = np.dot(x_input, theta)
+
+    peso_predicho = theta.predict(x_input).item()
 
     # Insertar el log en la base de datos
-    data_json = json.dumps(data.dict())
-    insert_log(data_json, peso_predicho)
+    print(peso_predicho)
+    insert_log(data, peso_predicho)
 
-    return {"sexo": data.sexo, "altura": data.altura, "peso_predicho": peso_predicho}
+    response = data.dict().copy()
+    response["medv_predicho"] = peso_predicho
+
+    return json.dumps(response)
 
 
 @app.get("/stats")
